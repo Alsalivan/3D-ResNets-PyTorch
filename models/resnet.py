@@ -1,10 +1,10 @@
-import math
-from functools import partial
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from functools import partial
+from lightly.models.modules import SimCLRProjectionHead
+from ecgcmr.imaging.img_utils.ShiftInterpolate import ShiftInterpolate
 
 def get_inplanes():
     return [64, 128, 256, 512]
@@ -105,13 +105,16 @@ class ResNet(nn.Module):
                  block,
                  layers,
                  block_inplanes,
-                 n_input_channels=3,
+                 n_input_channels=1,
                  conv1_t_size=7,
                  conv1_t_stride=1,
                  no_max_pool=False,
                  shortcut_type='B',
                  widen_factor=1.0,
-                 n_classes=400):
+                 image_embedding_dim=64,
+                 image_projection_dim=32,
+                 shift_time_steps=10,
+                 contrastive_dim=10):
         super().__init__()
 
         block_inplanes = [int(x * widen_factor) for x in block_inplanes]
@@ -126,28 +129,40 @@ class ResNet(nn.Module):
                                padding=(conv1_t_size // 2, 3, 3),
                                bias=False)
         self.bn1 = nn.BatchNorm3d(self.in_planes)
+
         self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool3d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, block_inplanes[0], layers[0],
-                                       shortcut_type)
+
+        self.maxpool = nn.MaxPool3d(kernel_size=3, stride=(1, 2, 2), padding=1)
+
+        self.layer1 = self._make_layer(block,
+                                       block_inplanes[0],
+                                       layers[0],
+                                       shortcut_type,
+                                       stride=(1, 1, 1))
         self.layer2 = self._make_layer(block,
                                        block_inplanes[1],
                                        layers[1],
                                        shortcut_type,
-                                       stride=2)
+                                       stride=(1, 2, 2))
         self.layer3 = self._make_layer(block,
                                        block_inplanes[2],
                                        layers[2],
                                        shortcut_type,
-                                       stride=2)
+                                       stride=(1, 2, 2))
         self.layer4 = self._make_layer(block,
                                        block_inplanes[3],
                                        layers[3],
                                        shortcut_type,
-                                       stride=2)
+                                       stride=(1, 2, 2))
+        
+        self.avgpool = nn.AdaptiveAvgPool3d((None, 1, 1))
 
-        self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
-        self.fc = nn.Linear(block_inplanes[3] * block.expansion, n_classes)
+        self.shift_interpolate = ShiftInterpolate(target_time_dim=contrastive_dim,
+                                                  roll_steps=shift_time_steps)
+
+        self.projection_head_imaging = SimCLRProjectionHead(input_dim=block_inplanes[3] * block.expansion,
+                                                            hidden_dim=image_embedding_dim,
+                                                            output_dim=image_projection_dim)
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -203,12 +218,19 @@ class ResNet(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = self.layer4(x)
+        x = self.layer4(x) # B, C, T', H', W'
 
-        x = self.avgpool(x)
+        x = self.avgpool(x) # B, C, T', 1, 1
+        x = x.flatten(start_dim=2) # B, C, T'
 
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
+        bs, _, time = x.shape
+
+        x = self.shift_interpolate(x) # B, C, T_contrastive
+
+        x = x.view(-1, x.shape[-2]) # B * T_contrastive, C
+        x = self.projection_head_imaging(x) # B * T_contrastive, d_proj
+
+        x = x.view(bs, time, -1) # B, T_contrastive, d_proj 
 
         return x
 
