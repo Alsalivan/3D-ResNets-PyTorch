@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from functools import partial
 from lightly.models.modules import SimCLRProjectionHead
-from ecgcmr.imaging.img_utils.ShiftInterpolate import ShiftInterpolate
+from ecgcmr.imaging.img_models.ShiftInterpolate import ShiftInterpolate
 
 def get_inplanes():
     return [64, 128, 256, 512]
