@@ -110,11 +110,7 @@ class ResNet(nn.Module):
                  conv1_t_stride=1,
                  no_max_pool=False,
                  shortcut_type='B',
-                 widen_factor=1.0,
-                 image_embedding_dim=64,
-                 image_projection_dim=32,
-                 shift_time_steps=10,
-                 contrastive_dim=10):
+                 widen_factor=1.0):
         super().__init__()
 
         block_inplanes = [int(x * widen_factor) for x in block_inplanes]
@@ -154,15 +150,6 @@ class ResNet(nn.Module):
                                        layers[3],
                                        shortcut_type,
                                        stride=(1, 2, 2))
-        
-        self.avgpool = nn.AdaptiveAvgPool3d((None, 1, 1))
-
-        self.shift_interpolate = ShiftInterpolate(target_time_dim=contrastive_dim,
-                                                  roll_steps=shift_time_steps)
-
-        self.projection_head_imaging = SimCLRProjectionHead(input_dim=block_inplanes[3] * block.expansion,
-                                                            hidden_dim=image_embedding_dim,
-                                                            output_dim=image_projection_dim)
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -172,6 +159,8 @@ class ResNet(nn.Module):
             elif isinstance(m, nn.BatchNorm3d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+
+        self.input_dim = block_inplanes[3] * block.expansion
 
     def _downsample_basic_block(self, x, planes, stride):
         out = F.avg_pool3d(x, kernel_size=1, stride=stride)
@@ -208,7 +197,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward_features(self, x):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -218,19 +207,7 @@ class ResNet(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = self.layer4(x) # B, C, T', H', W'
-
-        x = self.avgpool(x) # B, C, T', 1, 1
-        x = x.flatten(start_dim=2) # B, C, T'
-
-        bs, _, time = x.shape
-
-        x = self.shift_interpolate(x) # B, C, T_contrastive
-
-        x = x.view(-1, x.shape[-2]) # B * T_contrastive, C
-        x = self.projection_head_imaging(x) # B * T_contrastive, d_proj
-
-        x = x.view(bs, time, -1) # B, T_contrastive, d_proj 
+        x = self.layer4(x) # B, C, T', H', W' (T' == T)
 
         return x
 
