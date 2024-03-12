@@ -3,8 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from functools import partial
-from lightly.models.modules import SimCLRProjectionHead
-from ecgcmr.imaging.img_models.ShiftInterpolate import ShiftInterpolate
 
 def get_inplanes():
     return [64, 128, 256, 512]
@@ -160,7 +158,7 @@ class ResNet(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-        self.input_dim = block_inplanes[3] * block.expansion
+        self.encoded_dim = block_inplanes[3] * block.expansion
 
     def _downsample_basic_block(self, x, planes, stride):
         out = F.avg_pool3d(x, kernel_size=1, stride=stride)
